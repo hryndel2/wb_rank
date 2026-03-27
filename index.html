@@ -1,9 +1,10 @@
+```html
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>PixelAnimator Pro — улучшенная 2D анимация персонажа</title>
+    <title>PixelAnimator Pro — Gizmo вращения и масштабирования</title>
     <style>
         * {
             user-select: none;
@@ -215,6 +216,22 @@
             gap: 8px;
             flex: 1;
         }
+        .gizmo-mode-buttons {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
+        }
+        .gizmo-mode-buttons button {
+            font-size: 11px;
+            padding: 4px 10px;
+        }
+        kbd {
+            background: #2a2c3c;
+            border-radius: 5px;
+            padding: 2px 5px;
+            font-size: 10px;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -243,6 +260,13 @@
                 <button id="togglePivotModeBtn" class="mode-btn">📍 Режим пивота OFF</button>
                 <span class="badge">Ctrl+Shift+клик</span>
             </div>
+            <div class="flex-between" style="margin-top: 12px;">
+                <div class="gizmo-mode-buttons">
+                    <button id="gizmoRotateBtn" class="mode-btn active">🔄 Rotate</button>
+                    <button id="gizmoScaleBtn" class="mode-btn">📏 Scale</button>
+                </div>
+                <span class="badge"><kbd>R</kbd>/<kbd>S</kbd></span>
+            </div>
         </div>
         <div class="flex-between">
             <button id="exportBtn" class="primary">💾 Экспорт JSON</button>
@@ -253,7 +277,8 @@
         <div class="help-text">
             🖱️ Перетащи часть — изменит ключевой кадр<br>
             🎯 Вкл. режим пивота → клик на часть<br>
-            🕒 Двойной клик на маркере таймлайна — удалить
+            🕒 Двойной клик на маркере таймлайна — удалить<br>
+            🌀 Используй ручку справа для вращения/масштаба
         </div>
     </div>
 
@@ -294,14 +319,14 @@
         const timelineCanvas = document.getElementById('timelineCanvas');
         const tCtx = timelineCanvas.getContext('2d');
 
-        let parts = [];             // массив Part
+        let parts = [];
         let selectedPartId = null;
         let animationPlaying = false;
         let currentTime = 0.0;
-        let animationDuration = 5.0;    // секунд
+        let animationDuration = 5.0;
         let animFrameId = null;
 
-        // drag на холсте
+        // drag части
         let dragActive = false;
         let dragPartId = null;
         let dragStartMouse = { x: 0, y: 0 };
@@ -309,6 +334,18 @@
 
         // режим установки пивота
         let pivotMode = false;
+
+        // Gizmo
+        const GIZMO_LEN = 55;
+        const GIZMO_HANDLE_RADIUS = 8;
+        let gizmoMode = 'rotate';   // 'rotate' или 'scale'
+        let gizmoActive = false;
+        let gizmoPartId = null;
+        let gizmoStartMouseWorld = { x: 0, y: 0 };
+        let gizmoStartRotation = 0;
+        let gizmoStartScaleX = 1, gizmoStartScaleY = 1;
+        let gizmoStartAngle = 0;
+        let gizmoStartDistance = 0;
 
         // таймлайн: перетаскивание маркеров
         let draggingKeyframe = false;
@@ -328,7 +365,7 @@
                 this.rotation = 0;
                 this.scaleX = 1;
                 this.scaleY = 1;
-                this.keyframes = [];   // {time, x, y, rotation, scaleX, scaleY}
+                this.keyframes = [];
                 this.addKeyframe(0, this.x, this.y, this.rotation, this.scaleX, this.scaleY);
             }
 
@@ -424,31 +461,120 @@
             renderTimeline();
         }
 
-        // отрисовка холста с крестиком пивота
+        // отрисовка всего холста + Gizmo и пивота (постоянный размер)
         function renderCanvas() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // рисуем все части
             for(let part of parts) {
                 ctx.save();
                 ctx.translate(part.x, part.y);
                 ctx.rotate(part.rotation * Math.PI/180);
                 ctx.scale(part.scaleX, part.scaleY);
                 ctx.drawImage(part.img, -part.pivotX, -part.pivotY, part.width, part.height);
-                if(selectedPartId === part.id) {
-                    ctx.beginPath();
-                    ctx.moveTo(-10,0); ctx.lineTo(10,0);
-                    ctx.moveTo(0,-10); ctx.lineTo(0,10);
-                    ctx.strokeStyle = "#ff6666";
-                    ctx.lineWidth = 2;
-                    ctx.stroke();
-                    ctx.beginPath();
-                    ctx.arc(0,0,6,0,2*Math.PI);
-                    ctx.strokeStyle = "#ffaa66";
-                    ctx.stroke();
+                ctx.restore();
+            }
+            // рисуем пивот активной части (постоянный размер на экране)
+            const activePart = parts.find(p => p.id === selectedPartId);
+            if(activePart) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(activePart.x - 8, activePart.y);
+                ctx.lineTo(activePart.x + 8, activePart.y);
+                ctx.moveTo(activePart.x, activePart.y - 8);
+                ctx.lineTo(activePart.x, activePart.y + 8);
+                ctx.strokeStyle = "#ff6666";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(activePart.x, activePart.y, 5, 0, 2*Math.PI);
+                ctx.strokeStyle = "#ffaa66";
+                ctx.stroke();
+                ctx.restore();
+            }
+            // рисуем Gizmo для активной части
+            if(activePart) {
+                const handlePos = getHandleWorldPosition(activePart);
+                ctx.beginPath();
+                ctx.moveTo(activePart.x, activePart.y);
+                ctx.lineTo(handlePos.x, handlePos.y);
+                ctx.strokeStyle = "#c0c0c0";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                // ручка в зависимости от режима
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(handlePos.x, handlePos.y, GIZMO_HANDLE_RADIUS, 0, 2*Math.PI);
+                if(gizmoMode === 'rotate') {
+                    ctx.fillStyle = "#ffaa44";
+                    ctx.fill();
+                    ctx.fillStyle = "#000";
+                    ctx.font = "bold 12px monospace";
+                    ctx.fillText("↻", handlePos.x-4, handlePos.y+4);
+                } else {
+                    ctx.fillStyle = "#66ccff";
+                    ctx.fill();
+                    ctx.fillStyle = "#000";
+                    ctx.font = "bold 10px monospace";
+                    ctx.fillText("⤢", handlePos.x-3, handlePos.y+4);
                 }
                 ctx.restore();
             }
         }
 
+        // получить мировые координаты ручки (всегда вправо от пивота)
+        function getHandleWorldPosition(part) {
+            const angleRad = 0; // всегда горизонтально вправо
+            const dx = GIZMO_LEN * Math.cos(angleRad);
+            const dy = GIZMO_LEN * Math.sin(angleRad);
+            return { x: part.x + dx, y: part.y + dy };
+        }
+
+        // проверка попадания мыши в ручку активной части
+        function hitTestHandle(mouseWorld) {
+            const active = parts.find(p => p.id === selectedPartId);
+            if(!active) return false;
+            const handle = getHandleWorldPosition(active);
+            const dx = mouseWorld.x - handle.x;
+            const dy = mouseWorld.y - handle.y;
+            return Math.hypot(dx, dy) <= GIZMO_HANDLE_RADIUS + 3;
+        }
+
+        // обновить параметры активной части через gizmo
+        function updatePartByGizmo(mouseWorld) {
+            const part = parts.find(p => p.id === selectedPartId);
+            if(!part) return;
+            if(gizmoMode === 'rotate') {
+                const dx = mouseWorld.x - part.x;
+                const dy = mouseWorld.y - part.y;
+                let currentAngle = Math.atan2(dy, dx);
+                let deltaAngle = currentAngle - gizmoStartAngle;
+                let newRotation = gizmoStartRotation + deltaAngle * 180 / Math.PI;
+                part.rotation = newRotation;
+            } else { // scale
+                const dx = mouseWorld.x - part.x;
+                const dy = mouseWorld.y - part.y;
+                const dist = Math.hypot(dx, dy);
+                if(dist > 0.01) {
+                    const factor = dist / gizmoStartDistance;
+                    let newScaleX = gizmoStartScaleX * factor;
+                    let newScaleY = gizmoStartScaleY * factor;
+                    // ограничим масштаб для стабильности
+                    newScaleX = Math.min(Math.max(newScaleX, 0.1), 5);
+                    newScaleY = Math.min(Math.max(newScaleY, 0.1), 5);
+                    part.scaleX = newScaleX;
+                    part.scaleY = newScaleY;
+                }
+            }
+            // обновить ключевой кадр
+            if(!animationPlaying) {
+                part.addCurrentKeyframe(currentTime);
+            }
+            updateTransformPanel();
+            renderCanvas();
+            renderTimeline();
+        }
+
+        // ---------- ОСТАЛЬНАЯ ЛОГИКА (панели, таймлайн, анимация) ----------
         function updateTransformPanel() {
             const part = parts.find(p => p.id === selectedPartId);
             if(!part) {
@@ -529,32 +655,27 @@
             });
         }
 
-        // таймлайн: отрисовка + логика перетаскивания
         function renderTimeline() {
             tCtx.clearRect(0, 0, timelineCanvas.width, timelineCanvas.height);
             tCtx.fillStyle = "#11141f";
             tCtx.fillRect(0, 0, timelineCanvas.width, timelineCanvas.height);
             const w = timelineCanvas.width;
             const h = timelineCanvas.height;
-            // сетка
             tCtx.strokeStyle = "#3c3f5e";
             tCtx.lineWidth = 0.5;
             for(let t=0; t<=animationDuration; t+=0.5){
                 let x = (t / animationDuration) * w;
                 tCtx.beginPath(); tCtx.moveTo(x,0); tCtx.lineTo(x,h); tCtx.stroke();
             }
-            // текущее время
             let currentX = (currentTime / animationDuration) * w;
             tCtx.beginPath(); tCtx.moveTo(currentX,0); tCtx.lineTo(currentX,h);
             tCtx.strokeStyle = "#ffcc88"; tCtx.lineWidth=2; tCtx.stroke();
 
-            // рисуем ключевые кадры только для активной части
             const activePart = parts.find(p=>p.id===selectedPartId);
             if(activePart) {
                 activePart.keyframes.forEach((kf, idx) => {
                     let x = (kf.time / animationDuration) * w;
                     tCtx.fillStyle = "#ffaa66";
-                    tCtx.shadowBlur = 0;
                     tCtx.beginPath();
                     tCtx.rect(x-4, 8, 8, h-16);
                     tCtx.fill();
@@ -565,7 +686,201 @@
             }
         }
 
-        // обработка кликов/перетаскивания на таймлайне
+        function setTime(value) {
+            if(animationPlaying) pausePlay();
+            currentTime = Math.min(Math.max(parseFloat(value),0), animationDuration);
+            for(let p of parts) p.updateFromTimeline(currentTime);
+            if(selectedPartId) updateTransformPanel();
+            document.getElementById('timeSlider').value = currentTime;
+            document.getElementById('currentTimeLabel').innerText = currentTime.toFixed(2)+' сек';
+            renderCanvas();
+            renderTimeline();
+        }
+
+        function startPlay() { if(animationPlaying) return; animationPlaying=true; updateAnimationFrame(); }
+        function pausePlay() { animationPlaying=false; if(animFrameId) cancelAnimationFrame(animFrameId); animFrameId=null; }
+        function stopPlay() { pausePlay(); setTime(0); }
+        function updateAnimationFrame() {
+            if(!animationPlaying) return;
+            currentTime += 1/60;
+            if(currentTime >= animationDuration) {
+                currentTime = animationDuration;
+                animationPlaying = false;
+                cancelAnimationFrame(animFrameId);
+                animFrameId = null;
+            }
+            for(let p of parts) p.updateFromTimeline(currentTime);
+            if(selectedPartId) updateTransformPanel();
+            document.getElementById('timeSlider').value = currentTime;
+            document.getElementById('currentTimeLabel').innerText = currentTime.toFixed(2)+' сек';
+            renderCanvas();
+            renderTimeline();
+            if(animationPlaying) animFrameId = requestAnimationFrame(updateAnimationFrame);
+        }
+
+        function addKeyframeForActive() {
+            const part = parts.find(p=>p.id===selectedPartId);
+            if(part) { part.addCurrentKeyframe(currentTime); renderTimeline(); }
+        }
+        function addKeyframeForAll() {
+            for(let part of parts) part.addCurrentKeyframe(currentTime);
+            renderTimeline();
+        }
+        function deleteCurrentKeyframe() {
+            const part = parts.find(p=>p.id===selectedPartId);
+            if(part && part.deleteKeyframeAtTime(currentTime)) {
+                part.updateFromTimeline(currentTime);
+                renderCanvas(); renderTimeline(); updateTransformPanel();
+            } else alert("Нельзя удалить: только один ключевой кадр или нет кадра в это время");
+        }
+
+        function setDuration(value) {
+            animationDuration = parseFloat(value);
+            document.getElementById('durationSlider').value = animationDuration;
+            document.getElementById('durationLabel').innerText = animationDuration.toFixed(1)+' сек';
+            document.getElementById('timeSlider').max = animationDuration;
+            if(currentTime > animationDuration) setTime(animationDuration);
+            else setTime(currentTime);
+            renderTimeline();
+        }
+
+        function exportProject() { /* ... как в исходном коде ... */
+            const projectData = { version:"2.0", animationDuration, parts: parts.map(p => ({
+                id:p.id, imgData:p.img.src, width:p.width, height:p.height, pivotX:p.pivotX, pivotY:p.pivotY,
+                keyframes:p.keyframes, defaultX:p.x, defaultY:p.y, defaultRot:p.rotation, defaultScaleX:p.scaleX, defaultScaleY:p.scaleY
+            }))};
+            const dataStr = JSON.stringify(projectData, null, 2);
+            const blob = new Blob([dataStr], {type:"application/json"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `pixel_anim_${Date.now()}.json`;
+            a.click(); URL.revokeObjectURL(url);
+        }
+        function importProject(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if(data.version && data.parts) {
+                        animationDuration = data.animationDuration || 5;
+                        document.getElementById('durationSlider').value = animationDuration;
+                        document.getElementById('durationLabel').innerText = animationDuration.toFixed(1)+' сек';
+                        document.getElementById('timeSlider').max = animationDuration;
+                        parts = [];
+                        let loadedCount = 0;
+                        data.parts.forEach(partData => {
+                            const img = new Image();
+                            img.onload = () => {
+                                const newPart = new Part(partData.id, img, partData.width, partData.height);
+                                newPart.pivotX = partData.pivotX; newPart.pivotY = partData.pivotY;
+                                newPart.keyframes = partData.keyframes.map(k => ({...k}));
+                                newPart.keyframes.sort((a,b)=>a.time-b.time);
+                                newPart.updateFromTimeline(currentTime);
+                                parts.push(newPart);
+                                loadedCount++;
+                                if(loadedCount === data.parts.length) {
+                                    if(parts.length) selectedPartId = parts[0].id;
+                                    renderPartsList(); updateTransformPanel(); renderCanvas(); renderTimeline(); setTime(currentTime);
+                                }
+                            };
+                            img.src = partData.imgData;
+                        });
+                        if(data.parts.length===0) { renderPartsList(); renderCanvas(); renderTimeline(); }
+                    }
+                } catch(err) { alert("Ошибка импорта: " + err.message); }
+            };
+            reader.readAsText(file);
+        }
+
+        // ---------- ОБРАБОТЧИКИ МЫШИ (с поддержкой Gizmo) ----------
+        function getMouseWorldCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+        }
+
+        function onCanvasMouseDown(e) {
+            if(animationPlaying) pausePlay();
+            const mouse = getMouseWorldCoords(e);
+            // Проверка: попадание в ручку Gizmo активной части
+            if(selectedPartId && hitTestHandle(mouse)) {
+                const activePart = parts.find(p=>p.id===selectedPartId);
+                if(activePart) {
+                    gizmoActive = true;
+                    gizmoPartId = selectedPartId;
+                    gizmoStartMouseWorld = { x: mouse.x, y: mouse.y };
+                    gizmoStartRotation = activePart.rotation;
+                    gizmoStartScaleX = activePart.scaleX;
+                    gizmoStartScaleY = activePart.scaleY;
+                    const dx = mouse.x - activePart.x;
+                    const dy = mouse.y - activePart.y;
+                    gizmoStartAngle = Math.atan2(dy, dx);
+                    gizmoStartDistance = Math.hypot(dx, dy);
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // Иначе обычная логика: выбор части, drag или установка пивота
+            for(let i=parts.length-1; i>=0; i--) {
+                const part = parts[i];
+                const cos = Math.cos(-part.rotation * Math.PI/180);
+                const sin = Math.sin(-part.rotation * Math.PI/180);
+                let dx = mouse.x - part.x;
+                let dy = mouse.y - part.y;
+                dx /= part.scaleX;
+                dy /= part.scaleY;
+                let localX = dx * cos - dy * sin;
+                let localY = dx * sin + dy * cos;
+                localX += part.pivotX;
+                localY += part.pivotY;
+                if(localX >=0 && localX <= part.width && localY >=0 && localY <= part.height) {
+                    selectedPartId = part.id;
+                    renderPartsList();
+                    updateTransformPanel();
+                    if(pivotMode || (e.ctrlKey && e.shiftKey)) {
+                        part.pivotX = Math.min(Math.max(localX, 0), part.width);
+                        part.pivotY = Math.min(Math.max(localY, 0), part.height);
+                        renderCanvas();
+                    } else {
+                        dragActive = true;
+                        dragPartId = part.id;
+                        dragStartMouse = { x: mouse.x, y: mouse.y };
+                        dragStartPos = { x: part.x, y: part.y };
+                    }
+                    break;
+                }
+            }
+        }
+
+        function onCanvasMouseMove(e) {
+            const mouse = getMouseWorldCoords(e);
+            if(gizmoActive && selectedPartId === gizmoPartId) {
+                updatePartByGizmo(mouse);
+                return;
+            }
+            if(dragActive && dragPartId) {
+                const part = parts.find(p=>p.id===dragPartId);
+                if(part) {
+                    let dx = mouse.x - dragStartMouse.x;
+                    let dy = mouse.y - dragStartMouse.y;
+                    part.x = dragStartPos.x + dx;
+                    part.y = dragStartPos.y + dy;
+                    if(!animationPlaying) part.addCurrentKeyframe(currentTime);
+                    updateTransformPanel();
+                    renderCanvas();
+                    renderTimeline();
+                }
+            }
+        }
+
+        function onCanvasMouseUp(e) {
+            dragActive = false;
+            dragPartId = null;
+            gizmoActive = false;
+            gizmoPartId = null;
+        }
+
+        // ---------- ТАЙМЛАЙН ИНТЕРАКЦИЯ ----------
         function getKeyframeUnderMouse(mouseX, w) {
             const activePart = parts.find(p=>p.id===selectedPartId);
             if(!activePart) return null;
@@ -586,21 +901,14 @@
             const hit = getKeyframeUnderMouse(mouseX, timelineCanvas.width);
             if(hit && e.button === 0) {
                 draggingKeyframe = true;
-                draggedKeyframeData = {
-                    partId: hit.part.id,
-                    keyframeIndex: hit.index,
-                    startTime: hit.keyframe.time,
-                    startMouseX: mouseX
-                };
+                draggedKeyframeData = { partId: hit.part.id, keyframeIndex: hit.index, startTime: hit.keyframe.time, startMouseX: mouseX };
                 e.preventDefault();
             } else {
-                // клик по шкале — перемотка
                 let newTime = (mouseX / timelineCanvas.width) * animationDuration;
                 newTime = Math.min(Math.max(newTime, 0), animationDuration);
                 setTime(newTime);
             }
         }
-
         function onTimelineMouseMove(e) {
             if(!draggingKeyframe) return;
             const rect = timelineCanvas.getBoundingClientRect();
@@ -613,24 +921,14 @@
             const part = parts.find(p=>p.id === draggedKeyframeData.partId);
             if(part && part.keyframes[draggedKeyframeData.keyframeIndex]) {
                 const kf = part.keyframes[draggedKeyframeData.keyframeIndex];
-                // обновляем время ключа
                 const newKf = { ...kf, time: newTime };
                 part.keyframes.splice(draggedKeyframeData.keyframeIndex, 1);
                 part.addKeyframe(newKf.time, newKf.x, newKf.y, newKf.rotation, newKf.scaleX, newKf.scaleY);
                 if(!animationPlaying) part.updateFromTimeline(currentTime);
-                renderCanvas();
-                renderTimeline();
-                updateTransformPanel();
+                renderCanvas(); renderTimeline(); updateTransformPanel();
             }
         }
-
-        function onTimelineMouseUp(e) {
-            if(draggingKeyframe) {
-                draggingKeyframe = false;
-                renderTimeline();
-            }
-        }
-
+        function onTimelineMouseUp(e) { draggingKeyframe = false; }
         function onTimelineDblClick(e) {
             const rect = timelineCanvas.getBoundingClientRect();
             const scale = timelineCanvas.width / rect.width;
@@ -639,220 +937,14 @@
             if(hit && hit.part.keyframes.length > 1) {
                 hit.part.keyframes.splice(hit.index, 1);
                 if(!animationPlaying) hit.part.updateFromTimeline(currentTime);
-                renderCanvas();
-                renderTimeline();
-                updateTransformPanel();
+                renderCanvas(); renderTimeline(); updateTransformPanel();
             }
         }
 
-        // анимация
-        function updateAnimationFrame() {
-            if(!animationPlaying) return;
-            currentTime += 1/60;
-            if(currentTime >= animationDuration) {
-                currentTime = animationDuration;
-                animationPlaying = false;
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
-            }
-            for(let p of parts) p.updateFromTimeline(currentTime);
-            if(selectedPartId) updateTransformPanel();
-            document.getElementById('timeSlider').value = currentTime;
-            document.getElementById('currentTimeLabel').innerText = currentTime.toFixed(2)+' сек';
-            renderCanvas();
-            renderTimeline();
-            if(animationPlaying) animFrameId = requestAnimationFrame(updateAnimationFrame);
-        }
-        function startPlay() { if(animationPlaying) return; animationPlaying=true; updateAnimationFrame(); }
-        function pausePlay() { animationPlaying=false; if(animFrameId) cancelAnimationFrame(animFrameId); animFrameId=null; }
-        function stopPlay() { pausePlay(); setTime(0); }
-        function setTime(value) {
-            if(animationPlaying) pausePlay();
-            currentTime = Math.min(Math.max(parseFloat(value),0), animationDuration);
-            for(let p of parts) p.updateFromTimeline(currentTime);
-            if(selectedPartId) updateTransformPanel();
-            document.getElementById('timeSlider').value = currentTime;
-            document.getElementById('currentTimeLabel').innerText = currentTime.toFixed(2)+' сек';
-            renderCanvas();
-            renderTimeline();
-        }
-
-        // Добавление ключевых кадров
-        function addKeyframeForActive() {
-            const part = parts.find(p=>p.id===selectedPartId);
-            if(part) {
-                part.addCurrentKeyframe(currentTime);
-                renderTimeline();
-            }
-        }
-        function addKeyframeForAll() {
-            for(let part of parts) {
-                part.addCurrentKeyframe(currentTime);
-            }
-            renderTimeline();
-        }
-        function deleteCurrentKeyframe() {
-            const part = parts.find(p=>p.id===selectedPartId);
-            if(part && part.deleteKeyframeAtTime(currentTime)) {
-                part.updateFromTimeline(currentTime);
-                renderCanvas();
-                renderTimeline();
-                updateTransformPanel();
-            } else {
-                alert("Нельзя удалить: только один ключевой кадр или нет кадра в это время");
-            }
-        }
-
-        // Экспорт / импорт
-        function exportProject() {
-            const projectData = {
-                version: "2.0",
-                animationDuration,
-                parts: parts.map(p => ({
-                    id: p.id,
-                    imgData: p.img.src,
-                    width: p.width,
-                    height: p.height,
-                    pivotX: p.pivotX,
-                    pivotY: p.pivotY,
-                    keyframes: p.keyframes,
-                    defaultX: p.x,
-                    defaultY: p.y,
-                    defaultRot: p.rotation,
-                    defaultScaleX: p.scaleX,
-                    defaultScaleY: p.scaleY
-                }))
-            };
-            const dataStr = JSON.stringify(projectData, null, 2);
-            const blob = new Blob([dataStr], {type: "application/json"});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `pixel_anim_${Date.now()}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-
-        function importProject(file) {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                try {
-                    const data = JSON.parse(e.target.result);
-                    if(data.version && data.parts) {
-                        animationDuration = data.animationDuration || 5;
-                        document.getElementById('durationSlider').value = animationDuration;
-                        document.getElementById('durationLabel').innerText = animationDuration.toFixed(1)+' сек';
-                        document.getElementById('timeSlider').max = animationDuration;
-                        parts = [];
-                        let loadedCount = 0;
-                        data.parts.forEach(partData => {
-                            const img = new Image();
-                            img.onload = () => {
-                                const newPart = new Part(partData.id, img, partData.width, partData.height);
-                                newPart.pivotX = partData.pivotX;
-                                newPart.pivotY = partData.pivotY;
-                                newPart.keyframes = partData.keyframes.map(k => ({...k}));
-                                newPart.keyframes.sort((a,b)=>a.time-b.time);
-                                newPart.updateFromTimeline(currentTime);
-                                parts.push(newPart);
-                                loadedCount++;
-                                if(loadedCount === data.parts.length) {
-                                    if(parts.length) selectedPartId = parts[0].id;
-                                    renderPartsList();
-                                    updateTransformPanel();
-                                    renderCanvas();
-                                    renderTimeline();
-                                    setTime(currentTime);
-                                }
-                            };
-                            img.src = partData.imgData;
-                        });
-                        if(data.parts.length===0) { renderPartsList(); renderCanvas(); renderTimeline(); }
-                    }
-                } catch(err) { alert("Ошибка импорта: " + err.message); }
-            };
-            reader.readAsText(file);
-        }
-
-        // Обработка мыши на холсте (drag и установка пивота)
-        function handleCanvasMouseDown(e) {
-            if(animationPlaying) pausePlay();
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
-            // ищем часть под курсором (обратный порядок для верхнего слоя)
-            for(let i=parts.length-1; i>=0; i--) {
-                const part = parts[i];
-                const cos = Math.cos(-part.rotation * Math.PI/180);
-                const sin = Math.sin(-part.rotation * Math.PI/180);
-                let dx = mouseX - part.x;
-                let dy = mouseY - part.y;
-                dx /= part.scaleX;
-                dy /= part.scaleY;
-                let localX = dx * cos - dy * sin;
-                let localY = dx * sin + dy * cos;
-                localX += part.pivotX;
-                localY += part.pivotY;
-                if(localX >=0 && localX <= part.width && localY >=0 && localY <= part.height) {
-                    selectedPartId = part.id;
-                    renderPartsList();
-                    updateTransformPanel();
-                    if(pivotMode || (e.ctrlKey && e.shiftKey)) {
-                        // установка пивота
-                        part.pivotX = Math.min(Math.max(localX, 0), part.width);
-                        part.pivotY = Math.min(Math.max(localY, 0), part.height);
-                        renderCanvas();
-                    } else {
-                        dragActive = true;
-                        dragPartId = part.id;
-                        dragStartMouse = { x: mouseX, y: mouseY };
-                        dragStartPos = { x: part.x, y: part.y };
-                    }
-                    break;
-                }
-            }
-        }
-
-        function handleCanvasMouseMove(e) {
-            if(!dragActive || !dragPartId) return;
-            const part = parts.find(p=>p.id===dragPartId);
-            if(!part) { dragActive=false; return; }
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
-            let dx = mouseX - dragStartMouse.x;
-            let dy = mouseY - dragStartMouse.y;
-            part.x = dragStartPos.x + dx;
-            part.y = dragStartPos.y + dy;
-            if(!animationPlaying) part.addCurrentKeyframe(currentTime);
-            updateTransformPanel();
-            renderCanvas();
-            renderTimeline();
-        }
-
-        function handleCanvasMouseUp() { dragActive=false; dragPartId=null; }
-
-        // Изменение длительности анимации
-        function setDuration(value) {
-            animationDuration = parseFloat(value);
-            document.getElementById('durationSlider').value = animationDuration;
-            document.getElementById('durationLabel').innerText = animationDuration.toFixed(1)+' сек';
-            document.getElementById('timeSlider').max = animationDuration;
-            if(currentTime > animationDuration) setTime(animationDuration);
-            else setTime(currentTime);
-            renderTimeline();
-        }
-
-        // Инициализация UI и обработчиков
+        // ---------- ИНИЦИАЛИЗАЦИЯ UI ----------
         function init() {
             document.getElementById('addPartInput').addEventListener('change', (e) => {
-                Array.from(e.target.files).forEach(file => {
-                    loadAndResizeImage(file, (img,w,h) => addPartFromImage(img,w,h));
-                });
+                Array.from(e.target.files).forEach(file => loadAndResizeImage(file, (img,w,h) => addPartFromImage(img,w,h)));
                 e.target.value = '';
             });
             document.getElementById('playBtn').onclick = startPlay;
@@ -872,14 +964,26 @@
                 document.getElementById('togglePivotModeBtn').textContent = pivotMode ? "📍 Режим пивота ON" : "📍 Режим пивота OFF";
                 document.getElementById('togglePivotModeBtn').classList.toggle('active', pivotMode);
             };
+            document.getElementById('gizmoRotateBtn').onclick = () => {
+                gizmoMode = 'rotate';
+                document.getElementById('gizmoRotateBtn').classList.add('active');
+                document.getElementById('gizmoScaleBtn').classList.remove('active');
+                renderCanvas();
+            };
+            document.getElementById('gizmoScaleBtn').onclick = () => {
+                gizmoMode = 'scale';
+                document.getElementById('gizmoScaleBtn').classList.add('active');
+                document.getElementById('gizmoRotateBtn').classList.remove('active');
+                renderCanvas();
+            };
             document.getElementById('exportBtn').onclick = exportProject;
             document.getElementById('importInput').addEventListener('change', (e) => {
                 if(e.target.files[0]) importProject(e.target.files[0]);
                 e.target.value = '';
             });
-            canvas.addEventListener('mousedown', handleCanvasMouseDown);
-            window.addEventListener('mousemove', handleCanvasMouseMove);
-            window.addEventListener('mouseup', handleCanvasMouseUp);
+            canvas.addEventListener('mousedown', onCanvasMouseDown);
+            window.addEventListener('mousemove', onCanvasMouseMove);
+            window.addEventListener('mouseup', onCanvasMouseUp);
             timelineCanvas.addEventListener('mousedown', onTimelineMouseDown);
             window.addEventListener('mousemove', onTimelineMouseMove);
             window.addEventListener('mouseup', onTimelineMouseUp);
@@ -889,9 +993,22 @@
             document.getElementById('rot').addEventListener('change', syncActivePartFromInputs);
             document.getElementById('sclX').addEventListener('change', syncActivePartFromInputs);
             document.getElementById('sclY').addEventListener('change', syncActivePartFromInputs);
+
+            // клавиши R и S для переключения режима
+            window.addEventListener('keydown', (e) => {
+                if(e.key === 'r' || e.key === 'R') {
+                    e.preventDefault();
+                    gizmoMode = 'rotate';
+                    document.getElementById('gizmoRotateBtn').click();
+                } else if(e.key === 's' || e.key === 'S') {
+                    e.preventDefault();
+                    gizmoMode = 'scale';
+                    document.getElementById('gizmoScaleBtn').click();
+                }
+            });
+
             // демо-часть
             const demoImg = new Image();
-            demoImg.onload = () => addPartFromImage(demoImg, 64, 64);
             const demoCanvas = document.createElement('canvas');
             demoCanvas.width = 64; demoCanvas.height = 64;
             const dCtx = demoCanvas.getContext('2d');
@@ -901,6 +1018,7 @@
             dCtx.fillRect(20,20,24,24);
             dCtx.fillStyle = "#f5d742";
             dCtx.fillRect(28,28,8,8);
+            demoImg.onload = () => addPartFromImage(demoImg, 64, 64);
             demoImg.src = demoCanvas.toDataURL();
         }
         init();
@@ -908,3 +1026,4 @@
 </script>
 </body>
 </html>
+```
